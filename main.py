@@ -1,70 +1,151 @@
+from fastapi import FastAPI, HTTPException, Request, Form
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, EmailStr
-from bson import ObjectId
-
-from fastapi import FastAPI
 from pymongo import MongoClient
-from dotenv import load_dotenv
+from bson.objectid import ObjectId
 import os
+from dotenv import load_dotenv
 
-# Pydantic model for user profile
+# ----------------------------
+# Load environment variables
+# ----------------------------
+load_dotenv()
+MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_DB = os.getenv("MONGODB_DB")
+
+# ----------------------------
+# MongoDB connection
+# ----------------------------
+mongodb_client = MongoClient(MONGODB_URI)
+db = mongodb_client[MONGODB_DB]
+
+# ----------------------------
+# FastAPI instance
+# ----------------------------
+app = FastAPI()
+
+# ----------------------------
+# Templates folder
+# ----------------------------
+templates = Jinja2Templates(directory="templates")
+
+# ----------------------------
+# Pydantic model for user
+# ----------------------------
 class User(BaseModel):
     name: str
     email: EmailStr
-    age: int
+    bio: str = None
 
+# ----------------------------
+# API Endpoints (CRUD)
+# ----------------------------
 
-# Load environment variables
-load_dotenv()
+# Create user
+@app.post("/users")
+async def create_user(user: User):
+    result = db["users"].insert_one(user.dict())
+    new_user = db["users"].find_one({"_id": result.inserted_id})
+    new_user["_id"] = str(new_user["_id"])
+    return new_user
 
-MONGODB_URI = os.getenv("MONGODB_URI")
-DBNAME = os.getenv("MONGODB_DB", "mydatabase")
-
-# Connect to MongoDB
-client = MongoClient(MONGODB_URI)
-db = client[DBNAME]
-
-app = FastAPI(title="User Profile API")
-
-@app.get("/")
-def root():
-    return {"message": "FastAPI + MongoDB is working!"}
-
-# Create a simple endpoint to add a user profile
-@app.post("/users/")
-def create_user(user: User):
-    # Convert Pydantic model to dictionary
-    user_dict = user.dict()
-    result = db.users.insert_one(user_dict)
-    return {"inserted_id": str(result.inserted_id)}
-
-
-# Endpoint to get all users
-from bson import ObjectId  # add this import at the top
-
-@app.get("/users/")
-def get_users():
+# Get all users
+@app.get("/users")
+async def get_users(request: Request):
+    users_cursor = db["users"].find()
     users = []
-    for user in db.users.find():
-        user["_id"] = str(user["_id"])  # convert ObjectId to string
-        users.append(user)
-    return {"users": users}
+    for u in users_cursor:
+        u["_id"] = str(u["_id"])
+        users.append(u)
+    return templates.TemplateResponse("index.html", {"request": request, "users": users})
 
-from fastapi import HTTPException
+# Get single user
+@app.get("/users/{user_id}")
+async def get_user(user_id: str):
+    user = db["users"].find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user["_id"] = str(user["_id"])
+    return user
 
+# Update user
 @app.put("/users/{user_id}")
-def update_user(user_id: str, user: User):
-    result = db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": user.dict()}
+async def update_user(user_id: str, user: User):
+    result = db["users"].update_one(
+        {"_id": ObjectId(user_id)}, {"$set": user.dict()}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"updated_id": user_id}
+    updated_user = db["users"].find_one({"_id": ObjectId(user_id)})
+    updated_user["_id"] = str(updated_user["_id"])
+    return updated_user
 
+# Delete user
 @app.delete("/users/{user_id}")
-def delete_user(user_id: str):
-    result = db.users.delete_one({"_id": ObjectId(user_id)})
+async def delete_user(user_id: str):
+    result = db["users"].delete_one({"_id": ObjectId(user_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"deleted_id": user_id}
+    return {"detail": "User deleted"}
 
+# ----------------------------
+# UI Routes
+# ----------------------------
+
+# Index page with list of users
+@app.get("/ui/users")
+async def ui_users(request: Request):
+    users_cursor = db["users"].find()
+    users = []
+    for u in users_cursor:
+        u["_id"] = str(u["_id"])
+        users.append(u)
+    return templates.TemplateResponse("index.html", {"request": request, "users": users})
+
+# Create User form
+@app.get("/ui/users/new")
+async def ui_create_user_form(request: Request):
+    return templates.TemplateResponse("create_user.html", {"request": request})
+
+@app.post("/ui/users/new")
+async def ui_create_user(
+    request: Request,
+    name: str = Form(...),
+    email: str = Form(...),
+    bio: str = Form(None)
+):
+    user = {"name": name, "email": email, "bio": bio}
+    db["users"].insert_one(user)
+    return RedirectResponse(url="/ui/users", status_code=303)
+
+# Edit User form
+@app.get("/ui/users/{user_id}/edit")
+async def ui_edit_user_form(request: Request, user_id: str):
+    user = db["users"].find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user["_id"] = str(user["_id"])
+    return templates.TemplateResponse("edit_user.html", {"request": request, "user": user})
+
+@app.post("/ui/users/{user_id}/edit")
+async def ui_edit_user(
+    request: Request,
+    user_id: str,
+    name: str = Form(...),
+    email: str = Form(...),
+    bio: str = Form(None)
+):
+    db["users"].update_one(
+        {"_id": ObjectId(user_id)}, {"$set": {"name": name, "email": email, "bio": bio}}
+    )
+    return RedirectResponse(url="/ui/users", status_code=303)
+
+# Delete User confirmation
+@app.get("/ui/users/{user_id}/delete")
+async def ui_delete_user(request: Request, user_id: str):
+    user = db["users"].find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db["users"].delete_one({"_id": ObjectId(user_id)})
+    return RedirectResponse(url="/ui/users", status_code=303)

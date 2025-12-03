@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit User</title>
+</head>
+<body>
+    <h1>Edit User</h1>
+    <form method="post">
+        Name: <input type="text" name="name" value="{{ user.name }}" required><br><br>
+        Email: <input type="email" name="email" value="{{ user.email }}" required><br><br>
+        Bio: <textarea name="bio">{{ user.bio }}</textarea><br><br>
+        <button type="submit">Update</button>
+    </form>
+    <a href="/ui/users">Back to Users</a>
+</body>
+</html>
